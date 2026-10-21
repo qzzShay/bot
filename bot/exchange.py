@@ -53,9 +53,10 @@ class Exchange:
         if self.sandbox == "testnet":
             self.ex.set_sandbox_mode(True)
         elif self.sandbox == "demo":
-            if hasattr(self.ex, "enable_demo_trading"):
+            try:
                 self.ex.enable_demo_trading(True)
-            else:
+            except (AttributeError, KeyError, ccxt.NotSupported):
+                # z.B. OKX: Demo-Trading läuft dort über den Sandbox-Modus
                 self.ex.set_sandbox_mode(True)
         self._markets_loaded = False
 

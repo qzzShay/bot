@@ -1,0 +1,16 @@
+services:
+  cryptobot:
+    build: .
+    container_name: cryptobot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./config/config.yaml:/app/config/config.yaml:ro
+      - ./data:/app/data
+    command: ["run"]
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

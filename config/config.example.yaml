@@ -1,0 +1,90 @@
+# =====================================================================
+#  CryptoBot Konfiguration
+#  Kopieren nach config/config.yaml und anpassen.
+#  API-Keys gehören NICHT hierher, sondern in die .env Datei!
+# =====================================================================
+
+# paper  = echte Live-Marktdaten, simulierte Orders (kein Geld im Risiko)
+# live   = echte Orders auf der Börse (Testnet ODER echtes Konto, siehe exchange.sandbox)
+mode: paper
+
+exchange:
+  # ccxt-ID der Börse: binanceusdm (Binance USDT-M Futures), bybit, okx, bitget
+  name: binanceusdm
+  # Nur relevant für mode: live  (Paper-Modus nutzt immer echte Live-Kurse der Hauptbörse)
+  # none    = echtes Konto  → ECHTES GELD
+  # testnet = Testnet/Sandbox der Börse (Bybit, OKX)
+  # demo    = Demo-Trading mit Spielgeld (Binance Futures, Bybit)
+  sandbox: demo
+  margin_mode: isolated        # isolated (empfohlen) oder cross
+  quote_currency: USDT
+  # Gebühren für Paper-Trading und Backtest (Taker, Anteil, 0.0005 = 0.05%)
+  taker_fee: 0.0005
+  slippage: 0.0003
+
+symbols:
+  - BTC/USDT:USDT
+  - ETH/USDT:USDT
+  - SOL/USDT:USDT
+
+timeframes:
+  entry: 15m          # Zeiteinheit für Einstiege
+  trend: 4h           # übergeordneter Trendfilter (Multi-Timeframe)
+  history_bars: 400   # wie viele Kerzen für die Analyse geladen werden
+
+strategy:
+  # Mindest-Score (0..1) für einen Einstieg. Höher = weniger, aber bessere Trades.
+  entry_threshold: 0.55
+  # Nur in Richtung des übergeordneten Trends handeln
+  require_trend_alignment: true
+  # Mean-Reversion-Trades in Seitwärtsphasen erlauben (ADX niedrig)
+  allow_mean_reversion: true
+  adx_trend_min: 22
+  ema_fast: 21
+  ema_slow: 55
+  ema_trend: 200
+  rsi_period: 14
+  atr_period: 14
+  # Stop-Loss = ATR * Faktor
+  atr_stop_mult: 2.0
+  # Take-Profit als Vielfaches des Risikos (R)
+  take_profit_r: 2.5
+  # Bei +X R Stop auf Break-Even ziehen
+  breakeven_at_r: 1.0
+  # Trailing-Stop (Chandelier) ab +X R, Abstand ATR * Faktor
+  trailing_start_r: 1.5
+  trailing_atr_mult: 2.5
+  # Position bei starkem Gegensignal vorzeitig schließen
+  exit_on_opposite_signal: true
+  # Kein Einstieg, wenn Funding-Rate stark gegen die Position läuft (pro 8h, 0.0005 = 0.05%)
+  max_adverse_funding: 0.0005
+
+risk:
+  # Risiko pro Trade in % des Kontos (Abstand Entry→Stop)
+  risk_per_trade_pct: 1.0
+  # Maximaler Hebel. Der Bot nutzt nur so viel Hebel wie für die Positionsgröße nötig.
+  max_leverage: 5
+  # Maximale Positionsgröße (Notional) als Vielfaches des Kontos
+  max_position_notional_x: 3.0
+  max_open_positions: 2
+  # Tagesverlust-Limit in % → für den Rest des Tages (UTC) keine neuen Trades
+  max_daily_loss_pct: 4.0
+  # Drawdown vom Höchststand in % → Kill-Switch: alles schließen, Bot stoppt neue Trades
+  max_drawdown_pct: 15.0
+  # Pause nach X Verlusttrades in Folge (Minuten)
+  max_consecutive_losses: 4
+  cooldown_minutes: 240
+  # Liquidationspreis muss mindestens so viel % weiter weg sein als der Stop
+  liquidation_buffer_pct: 1.0
+  # Startkapital für Paper-Trading und Backtest
+  paper_start_equity: 1000
+
+engine:
+  # Wie oft (Sekunden) die Schleife läuft
+  poll_seconds: 20
+  db_path: data/cryptobot.sqlite
+  log_level: INFO
+  log_file: data/cryptobot.log
+
+notifications:
+  telegram_enabled: false   # Token/Chat-ID in .env setzen

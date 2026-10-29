@@ -12,6 +12,7 @@ from .analysis import compute_features, tf_delta
 from .broker import ClosedTrade, LiveBroker, PaperBroker, Position, now_iso
 from .config import Config
 from .exchange import Exchange
+from .news import NewsMonitor
 from .notifier import Notifier
 from .risk import RiskManager
 from .storage import Storage
@@ -37,6 +38,7 @@ class Engine:
         self.broker: PaperBroker | LiveBroker = (
             LiveBroker(self.x, cfg.exchange) if cfg.is_live else PaperBroker(cfg.exchange, cfg.risk.paper_start_equity)
         )
+        self.news = NewsMonitor(cfg.news, cfg.symbols)
         self.last_bar: dict[str, pd.Timestamp] = {}
         self._btc_cache: pd.DataFrame | None = None
         self.running = True
@@ -145,6 +147,10 @@ class Engine:
         sig = self.strategy.entry_signal(feat)
         if not sig:
             return
+        blocked = self.news.blocked(symbol)
+        if blocked:
+            log.info("%s: Signal %s wegen News ausgesetzt – %s", symbol, sig.side, blocked)
+            return
         fr = self.x.funding_rate(symbol)
         sig = self.strategy.entry_signal(feat, funding_rate=fr)
         if not sig:
@@ -179,8 +185,26 @@ class Engine:
         )
         self._persist_state()
 
+    def _check_news(self) -> None:
+        """Neue kritische Meldungen melden; bei Futures-Delisting betroffene Positionen schließen."""
+        try:
+            fresh = self.news.refresh()
+        except Exception:
+            log.exception("News-Abruf fehlgeschlagen – Bot handelt normal weiter")
+            return
+        for ev in fresh:
+            self.notify.send(f"📰 {ev.describe()}\n{ev.link}")
+            if not (ev.futures_delisting and self.cfg.news.close_on_delisting):
+                continue
+            for sym in list(self.broker.positions):
+                if sym.split("/")[0] in ev.coins:
+                    c = self.broker.close(sym, self.x.last_price(sym), "Futures-Delisting angekündigt")
+                    if c:
+                        self._on_closed(c)
+
     def tick(self) -> None:
         now = pd.Timestamp.now(tz="UTC")
+        self._check_news()
         # 1) Stops/TPs prüfen (Paper: simuliert, Live: von der Börse ausgeführt)
         for sym in self.cfg.symbols:
             price = self.x.last_price(sym)
@@ -235,7 +259,7 @@ class Engine:
                   if (t["closed_at"] or "")[:10] == (self.risk.day and _yesterday(self.risk.day))]
         pnl = sum(t["pnl"] or 0 for t in trades)
         self.notify.send(f"📊 Tagesbericht: {len(trades)} Trades, PnL {pnl:+.2f} | Equity {equity:.2f} "
-                         f"| Offene Positionen: {len(self.broker.positions)}")
+                         f"| Offene Positionen: {len(self.broker.positions)}\n{self.news.summary()}")
 
     def stop(self, *_):
         log.info("Stop-Signal empfangen – beende nach aktuellem Durchlauf (offene Positionen bleiben mit SL/TP bestehen)")

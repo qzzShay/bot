@@ -109,5 +109,32 @@ engine:
   log_level: INFO
   log_file: data/cryptobot.log
 
+# ---------------------------------------------------------------------
+#  News & Ereignisse – Risikoschutz, KEIN Handelssignal (Begründung im README)
+# ---------------------------------------------------------------------
+news:
+  enabled: true
+  poll_minutes: 5
+  # Keine NEUEN Trades rund um FOMC-Zinsentscheidungen und wichtige US-Daten (CPI, NFP, PCE, GDP …)
+  macro_filter: true
+  macro_block_before_hours: 4
+  macro_block_after_hours: 4
+  # Keine NEUEN Trades auf einem Coin nach kritischen Meldungen (Hack, Klage, Depeg, Netzwerk-Ausfall …)
+  headline_filter: true
+  headline_block_hours: 12
+  # Sperre erst, wenn so viele unabhängige Quellen berichten (Binance-Ankündigungen zählen sofort)
+  headline_min_sources: 2
+  # Kündigt Binance ein Futures-Delisting eines gehandelten Coins an → Position schließen
+  close_on_delisting: true
+  feeds:
+    - https://cointelegraph.com/rss
+    - https://www.theblock.co/rss.xml
+    - https://decrypt.co/feed
+    - https://www.coindesk.com/arc/outboundfeeds/rss/
+  # Fear & Greed als Filter: im Backtest NICHT stabil besser → aus (wird trotzdem angezeigt)
+  fear_greed_filter: false
+  greed_max: 80
+  fear_min: 20
+
 notifications:
   telegram_enabled: false   # Token/Chat-ID in .env setzen

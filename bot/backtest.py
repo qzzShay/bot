@@ -13,6 +13,7 @@ import pandas as pd
 from .analysis import TF_DELTA, compute_features, resample, tf_delta
 from .broker import ClosedTrade, PaperBroker
 from .config import Config
+from .news import NewsMonitor
 from .risk import RiskManager
 from .strategy import Strategy
 
@@ -110,6 +111,8 @@ def run_backtest(cfg: Config, data: dict[str, pd.DataFrame], htf_data: dict[str,
         feats[sym] = compute_features(df, htf, cfg.strategy, tf.entry, tf.trend, btc=btc,
                                       funding=fr if fr is not None and len(fr) else None)
     fund_arr = {s: f["funding"].to_numpy() for s, f in feats.items()}
+    # Makro-Termine (FOMC, historisch bekannt). Schlagzeilen gibt es historisch nicht → nur live.
+    news = NewsMonitor(cfg.news, [])
     ohlc = {s: f[["high", "low", "close", "atr"]].to_numpy() for s, f in feats.items()}
 
     index = sorted(set().union(*[f.index for f in feats.values()]))
@@ -164,7 +167,7 @@ def run_backtest(cfg: Config, data: dict[str, pd.DataFrame], htf_data: dict[str,
             if i < 1:
                 continue
             sig = strategy.entry_signal(f, i)
-            if not sig:
+            if not sig or (cfg.news.enabled and news.macro_blocked(now)):
                 continue
             ok, _ = risk.can_open(equity, len(broker.positions), now)
             if not ok:

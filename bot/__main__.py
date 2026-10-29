@@ -1,7 +1,7 @@
 """Kommandozeile:  python -m bot <befehl>
 
   run          Bot starten (Paper oder Live, je nach config)
-  analyze      Aktuelle Marktanalyse für alle Symbole anzeigen
+  analyze      Aktuelle Marktanalyse + News/Termine für alle Symbole anzeigen
   backtest     Strategie auf historischen Daten testen
   optimize     Parameter-Suche mit Out-of-Sample-Prüfung
   check        Verbindung, API-Keys, Kontostand und Symbole prüfen
@@ -55,6 +55,16 @@ def cmd_analyze(cfg, args):
             tp = f"{sig.take_profit:.6g}" if sig.take_profit else "Trailing"
             print(f"  >>> SIGNAL: {sig.side.upper()} @ {sig.price:.6g} SL {sig.stop:.6g} TP {tp} ({sig.reason})")
         print()
+    if cfg.news.enabled:
+        from .news import NewsMonitor
+
+        news = NewsMonitor(cfg.news, cfg.symbols)
+        news.refresh(force=True)
+        print("NEWS & EREIGNISSE\n" + news.summary())
+        for sym in args.symbols or cfg.symbols:
+            reason = news.blocked(sym)
+            if reason:
+                print(f"  {sym}: neue Trades gesperrt – {reason}")
 
 
 def _load_data(cfg, args):

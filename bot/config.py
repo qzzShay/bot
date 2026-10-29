@@ -9,6 +9,8 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
+from .news import DEFAULT_FEEDS
+
 LIVE_CONFIRMATION = "I_UNDERSTAND_THE_RISK"
 DEFAULT_SYMBOLS = [f"{c}/USDT:USDT" for c in ("BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "LINK")]
 VALID_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"}
@@ -91,6 +93,28 @@ class EngineConfig:
 
 
 @dataclass
+class NewsConfig:
+    enabled: bool = True
+    poll_minutes: int = 5
+    # Keine neuen Trades rund um FOMC-Zinsentscheidungen und wichtige US-Makrodaten (CPI, NFP, PCE …)
+    macro_filter: bool = True
+    macro_block_before_hours: float = 4
+    macro_block_after_hours: float = 4
+    # Keine neuen Trades auf einem Coin nach kritischen Schlagzeilen (Hack, Delisting, Klage, Depeg …)
+    headline_filter: bool = True
+    headline_block_hours: float = 12
+    # Sperre erst, wenn so viele unabhängige Quellen berichten (weniger Fehlalarme)
+    headline_min_sources: int = 2
+    # Futures-Delisting eines gehandelten Coins → offene Position schließen
+    close_on_delisting: bool = True
+    feeds: list[str] = field(default_factory=lambda: list(DEFAULT_FEEDS))
+    # Fear & Greed als Filter (im Backtest NICHT stabil besser – Standard aus, nur Anzeige)
+    fear_greed_filter: bool = False
+    greed_max: int = 80
+    fear_min: int = 20
+
+
+@dataclass
 class NotificationConfig:
     telegram_enabled: bool = False
     telegram_token: str = ""
@@ -107,6 +131,7 @@ class Config:
     risk: RiskConfig = field(default_factory=RiskConfig)
     engine: EngineConfig = field(default_factory=EngineConfig)
     notifications: NotificationConfig = field(default_factory=NotificationConfig)
+    news: NewsConfig = field(default_factory=NewsConfig)
     live_confirmed: bool = False
 
     @property
@@ -182,6 +207,7 @@ def load_config(path: str | os.PathLike = "config/config.yaml", env_file: str | 
         risk=_build(RiskConfig, raw.get("risk")),
         engine=_build(EngineConfig, raw.get("engine")),
         notifications=_build(NotificationConfig, raw.get("notifications")),
+        news=_build(NewsConfig, raw.get("news")),
     )
     cfg.exchange.api_key = os.getenv("EXCHANGE_API_KEY", "")
     cfg.exchange.api_secret = os.getenv("EXCHANGE_API_SECRET", "")

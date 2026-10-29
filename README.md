@@ -21,6 +21,7 @@ entwickelt und mit Coins und Zeiträumen geprüft, die bei der Entwicklung nicht
 | **Strategie** | Donchian-Breakout auf 4h (55-Kerzen-Hoch/-Tief) mit ATR-Stop und weitem Trailing-Stop – Gewinner laufen lassen, Verlierer früh schließen |
 | **Marktregime** | BTC-Trendfilter: Longs nur, wenn BTC über EMA200 (4h), Shorts nur darunter |
 | **Funding** | Kein Einstieg in überfüllte Trades (24h-Funding stark gegen die Position); Funding-Kosten im Backtest und Paper-Modus |
+| **News** | Wirtschaftskalender (FOMC, CPI, NFP …), Krypto-Schlagzeilen (Cointelegraph, The Block, Decrypt, CoinDesk), Binance-Delistings, Fear & Greed – als Risikoschutz mit Telegram-Alarm |
 | **Alternative** | Alte Indikator-Konfluenz (`strategy.type: confluence`) bleibt wählbar – verlor aber im Backtest in jedem Jahr |
 | **Hebel** | Automatisch: so wenig wie nötig, max. `max_leverage`; Liquidationspreis muss *hinter* dem Stop liegen |
 | **Positionsgröße** | Risikobasiert: fester %-Satz des Kontos pro Trade (Abstand Entry → Stop) |
@@ -152,6 +153,38 @@ Alle Parameter stehen kommentiert in `config/config.example.yaml`.
 
 ---
 
+## News & Ereignisse
+
+**Was getestet wurde** (gleiches Verfahren wie bei der Strategie, echte Daten 2021–2026):
+
+| Idee | Ergebnis | Entscheidung |
+|---|---|---|
+| Keine Trades ±4–12 h um FOMC-Zinsentscheidungen | neutral (+297 % statt +295 %) | **an** – kostet nichts, schützt vor Slippage bei Zins-Spikes |
+| Fear & Greed (keine Longs bei Gier, keine Shorts bei Angst) | mal besser, mal schlechter – nicht stabil | **aus** (nur Anzeige) |
+| Keine Einstiege auf extremen News-Kerzen | **schlechter** in allen Tests | **nicht verwendet** |
+
+Kernerkenntnis: Der Kurs reagiert auf News schneller, als ein Bot Schlagzeilen lesen kann – und die besten
+Ausbrüche *entstehen* auf News-Kerzen. Die Trendfolge handelt News also bereits über den Preis. Schlagzeilen
+als Kaufsignal zu nutzen, würde zu spät kommen.
+
+**Wofür News im Bot genutzt werden – Schutz vor Ereignissen, die der Kurs vorher nicht zeigt:**
+
+- **Futures-Delisting** (offizielle Binance-Ankündigung) → Coin gesperrt, offene Position wird geschlossen
+- **Hack, Klage, Depeg, Netzwerk-Ausfall** zu einem gehandelten Coin → 12 h keine neuen Trades auf diesem Coin
+  (erst wenn ≥ 2 unabhängige Quellen berichten – verhindert Fehlalarme; Datenlecks/Phishing werden ignoriert)
+- **Marktweite Krise** (Stablecoin-Depeg, Börse friert Auszahlungen ein, große Börse gehackt) → alle Coins gesperrt
+- **Makro-Termine** (FOMC, CPI, NFP, PCE, GDP – USD, hohe Wichtigkeit) → ±4 h keine neuen Trades
+- **Telegram-Alarm** bei jeder kritischen Meldung; Tagesbericht mit Fear & Greed und anstehenden Terminen
+
+Offene Positionen behalten immer ihren Stop auf der Börse. Fällt eine News-Quelle aus, handelt der Bot normal weiter.
+`python -m bot analyze` zeigt aktuelle Termine, Meldungen und Sperren.
+
+Grenzen: Die Erkennung arbeitet mit Schlüsselwörtern auf englischen Schlagzeilen. Für Schlagzeilen gibt es keine
+frei verfügbare Historie, deshalb ist dieser Teil (anders als der Makrofilter) nicht backtestbar – er sperrt
+nur neue Einstiege und ist bewusst vorsichtig eingestellt.
+
+---
+
 ## Backtest-Ergebnisse
 
 Echte Binance-USDT-M-Futures-Daten, Startkapital 1.000 USDT, Taker-Gebühr 0,05 % + Slippage 0,03 % pro Seite,
@@ -193,11 +226,12 @@ bot/
   engine.py      Hauptschleife, Wiederherstellung nach Neustart, Benachrichtigungen
   backtest.py    Backtester, Kennzahlen, Optimierung
   datasets.py    Download historischer Kerzen + Funding aus den Binance-Archiven
+  news.py        Wirtschaftskalender, Schlagzeilen, Binance-Delistings, Fear & Greed
   storage.py     SQLite (Trades, Equity, Zustand)
   notifier.py    Telegram + Logging
 config/          Beispielkonfiguration
 deploy/          systemd-Unit + VPS-Installationsskript
-tests/           pytest-Suite (Indikatoren, Lookahead, Breakout, Risiko, Funding, Broker, Live-Order-Ablauf, Engine)
+tests/           pytest-Suite (Indikatoren, Lookahead, Breakout, Risiko, Funding, News, Broker, Live-Order-Ablauf, Engine)
 ```
 
 Tests: `pip install -r requirements-dev.txt && python -m pytest`

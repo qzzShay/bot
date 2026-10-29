@@ -33,5 +33,6 @@ def ohlcv():
 @pytest.fixture
 def cfg():
     c = Config()
+    c.news.enabled = False  # Tests ohne Netzwerk; das News-Modul hat eigene Tests
     c.validate()
     return c

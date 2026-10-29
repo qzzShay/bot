@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS trades (
     entry REAL NOT NULL,
     stop REAL NOT NULL,
     initial_stop REAL NOT NULL,
-    take_profit REAL NOT NULL,
+    take_profit REAL,
     leverage INTEGER NOT NULL,
     best_price REAL NOT NULL,
     opened_at TEXT NOT NULL,
@@ -49,7 +49,20 @@ class Storage:
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        # v1 → v2: take_profit darf NULL sein (Breakout-Strategie arbeitet ohne festes Kursziel)
+        cols = {r["name"]: r for r in self.conn.execute("PRAGMA table_info(trades)")}
+        if cols.get("take_profit") is not None and cols["take_profit"]["notnull"]:
+            names = ", ".join(cols)
+            self.conn.executescript(f"""
+                ALTER TABLE trades RENAME TO trades_v1;
+                {SCHEMA.split(';')[0]};
+                INSERT INTO trades ({names}) SELECT {names} FROM trades_v1;
+                DROP TABLE trades_v1;
+            """)
 
     # ---------- Trades ----------
     def insert_trade(self, **t: Any) -> int:

@@ -14,7 +14,7 @@ class FakeExchange:
 
     def __init__(self, data):
         self.data = data
-        self.i = 600
+        self.i = 450
 
     def load_markets(self):
         return {}
@@ -27,7 +27,7 @@ class FakeExchange:
 
     def fetch_ohlcv(self, s, tf, bars, **kw):
         df = self.data[s].iloc[: self.i]
-        if tf != "15m":
+        if tf != "4h":
             df = resample(df, tf).iloc[:-1]   # nur abgeschlossene HTF-Kerzen
         return df.tail(bars)
 
@@ -40,18 +40,19 @@ class FakeExchange:
 
 def make_engine(cfg, fx, store):
     cfg.symbols = list(fx.data)
-    cfg.timeframes.history_bars = 600
+    cfg.timeframes.history_bars = 400
     e = Engine(cfg, exchange=fx, storage=store, notifier=Notifier(cfg.notifications))
     e._bar_due = lambda s, now: True
     return e
 
 
 def test_engine_paper_trades_and_restores(cfg):
-    fx = FakeExchange({"BTC/USDT:USDT": make_ohlcv(seed=11), "ETH/USDT:USDT": make_ohlcv(seed=12, start_price=2000)})
+    fx = FakeExchange({"BTC/USDT:USDT": make_ohlcv(seed=11, n=2000, freq="4h"),
+                       "ETH/USDT:USDT": make_ohlcv(seed=12, n=2000, start_price=2000, freq="4h")})
     store = Storage(":memory:")
     e = make_engine(cfg, fx, store)
     e.restore()
-    for _ in range(900):
+    for _ in range(1500):
         fx.i += 1
         e.tick()
     key = e.mode_key
@@ -71,7 +72,7 @@ def test_engine_paper_trades_and_restores(cfg):
 
 
 def test_kill_switch_closes_everything(cfg):
-    fx = FakeExchange({"BTC/USDT:USDT": make_ohlcv(seed=11)})
+    fx = FakeExchange({"BTC/USDT:USDT": make_ohlcv(seed=11, n=1000, freq="4h")})
     store = Storage(":memory:")
     e = make_engine(cfg, fx, store)
     e.restore()

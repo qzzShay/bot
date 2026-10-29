@@ -6,7 +6,7 @@ from bot.backtest import optimize, run_backtest
 
 
 def test_backtest_runs_and_is_consistent(cfg):
-    data = {"BTC": make_ohlcv(seed=1), "ETH": make_ohlcv(seed=2, start_price=2000)}
+    data = {"BTC/USDT:USDT": make_ohlcv(seed=1, n=3000, freq="4h"), "ETH": make_ohlcv(seed=2, n=3000, start_price=2000, freq="4h")}
     res = run_backtest(cfg, data)
     m = res.metrics
     assert m["trades"] > 5
@@ -21,7 +21,7 @@ def test_backtest_runs_and_is_consistent(cfg):
 
 def test_max_open_positions_respected(cfg):
     cfg.risk.max_open_positions = 1
-    data = {"A": make_ohlcv(seed=3), "B": make_ohlcv(seed=4), "C": make_ohlcv(seed=5)}
+    data = {s: make_ohlcv(seed=k, n=3000, freq="4h") for k, s in enumerate("ABC", 3)}
     res = run_backtest(cfg, data)
     spans = sorted((t.opened_at, t.closed_at) for t in res.trades)
     for (o1, c1), (o2, _) in zip(spans, spans[1:]):
@@ -29,7 +29,7 @@ def test_max_open_positions_respected(cfg):
 
 
 def test_optimize_small_grid(cfg):
-    data = {"BTC": make_ohlcv(seed=7, n=5000)}
+    data = {"BTC": make_ohlcv(seed=7, n=3000, freq="4h")}
     grid = {"strategy.entry_threshold": [0.5, 0.6], "strategy.take_profit_r": [2.0]}
     res = optimize(cfg, data, grid=grid)
     assert res and "test" in res[0]

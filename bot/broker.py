@@ -39,6 +39,12 @@ class Position(PositionState):
     def margin(self) -> float:
         return self.entry * self.qty / max(self.leverage, 1)
 
+    @property
+    def open_risk(self) -> float:
+        """Verlust bis zum aktuellen Stop (0, wenn der Stop bereits im Gewinn liegt)."""
+        d = 1 if self.side == LONG else -1
+        return max(0.0, (self.entry - self.stop) * d * self.qty)
+
 
 @dataclass
 class ClosedTrade:
@@ -111,6 +117,17 @@ class PaperBroker:
         if symbol in self.positions:
             self.positions[symbol].stop = stop
 
+    def apply_funding(self, symbol: str, rate: float) -> float:
+        """Funding-Zahlung buchen: Longs zahlen bei positiver Rate, Shorts erhalten sie (und umgekehrt)."""
+        pos = self.positions.get(symbol)
+        if pos is None or not rate:
+            return 0.0
+        d = 1 if pos.side == LONG else -1
+        payment = self.marks.get(symbol, pos.entry) * pos.qty * rate * d
+        self.cash -= payment
+        pos.fees += payment
+        return payment
+
     def check_exits(self, symbol: str, high: float, low: float, ts: str | None = None) -> ClosedTrade | None:
         """Prüft, ob Stop-Loss oder Take-Profit innerhalb [low, high] getroffen wurden.
         Werden beide in derselben Kerze berührt, wird konservativ der Stop angenommen."""
@@ -120,12 +137,12 @@ class PaperBroker:
         if pos.side == LONG:
             if low <= pos.stop:
                 return self.close(symbol, pos.stop, "Stop-Loss" if pos.stop < pos.entry else "Trailing-Stop", ts)
-            if high >= pos.take_profit:
+            if pos.take_profit is not None and high >= pos.take_profit:
                 return self.close(symbol, pos.take_profit, "Take-Profit", ts)
         else:
             if high >= pos.stop:
                 return self.close(symbol, pos.stop, "Stop-Loss" if pos.stop > pos.entry else "Trailing-Stop", ts)
-            if low <= pos.take_profit:
+            if pos.take_profit is not None and low <= pos.take_profit:
                 return self.close(symbol, pos.take_profit, "Take-Profit", ts)
         return None
 
@@ -239,7 +256,8 @@ class LiveBroker:
 
         # Stops relativ zum tatsächlichen Fill verschieben (Slippage), Abstände bleiben gleich
         shift = fill - signal.price
-        stop, tp = signal.stop + shift, signal.take_profit + shift
+        stop = signal.stop + shift
+        tp = signal.take_profit + shift if signal.take_profit is not None else None
         try:
             sl_id, tp_id = self._protect(symbol, signal.side, filled, stop, tp)
         except Exception:
@@ -313,7 +331,7 @@ class LiveBroker:
             price = sum(float(t["price"]) * float(t["amount"]) for t in trades) / amt
         else:
             price = self.x.last_price(pos.symbol)
-        if abs(price - pos.take_profit) < abs(price - pos.stop):
+        if pos.take_profit is not None and abs(price - pos.take_profit) < abs(price - pos.stop):
             return price, "Take-Profit"
         return price, "Stop-Loss" if (price - pos.entry) * (1 if pos.side == LONG else -1) < 0 else "Trailing-Stop"
 

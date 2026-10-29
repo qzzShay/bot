@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .analysis import compute_features, resample, tf_delta
+from .analysis import TF_DELTA, compute_features, resample, tf_delta
 from .broker import ClosedTrade, PaperBroker
 from .config import Config
 from .risk import RiskManager
@@ -79,22 +79,38 @@ def compute_metrics(trades: list[ClosedTrade], equity: pd.Series, start_equity: 
     }
 
 
+def funding_to_bars(funding: pd.Series, timeframe: str) -> pd.Series:
+    """Funding-Ereignisse (Zeitstempel → Rate) zu Summen je Kerze zusammenfassen."""
+    if funding is None or funding.empty:
+        return pd.Series(dtype=float)
+    return funding.resample(TF_DELTA[timeframe], label="left", closed="left").sum()
+
+
 def run_backtest(cfg: Config, data: dict[str, pd.DataFrame], htf_data: dict[str, pd.DataFrame] | None = None,
-                 limits: dict | None = None, trade_start: pd.Timestamp | None = None) -> BacktestResult:
+                 limits: dict | None = None, trade_start: pd.Timestamp | None = None,
+                 funding: dict[str, pd.Series] | None = None, btc: pd.DataFrame | None = None) -> BacktestResult:
     """data: {symbol: OHLCV im Entry-Timeframe}. HTF-Daten werden – falls nicht übergeben – per Resampling erzeugt.
-    trade_start: erst ab diesem Zeitpunkt handeln (Daten davor dienen nur zum Einschwingen der Indikatoren)."""
+    trade_start: erst ab diesem Zeitpunkt handeln (Daten davor dienen nur zum Einschwingen der Indikatoren).
+    funding: {symbol: Funding-Ereignisse}; werden auf offene Positionen gebucht.
+    btc: BTC-Kerzen für den Regime-Filter (Standard: data['BTC/USDT:USDT'], falls vorhanden)."""
     tf = cfg.timeframes
     strategy = Strategy(cfg.strategy)
     risk = RiskManager(cfg.risk)
     broker = PaperBroker(cfg.exchange, cfg.risk.paper_start_equity)
     limits = limits or {}
 
+    if btc is None:
+        btc = data.get("BTC/USDT:USDT")
     feats = {}
     for sym, df in data.items():
         htf = (htf_data or {}).get(sym)
         if htf is None:
             htf = resample(df, tf.trend)
-        feats[sym] = compute_features(df, htf, cfg.strategy, tf.entry, tf.trend)
+        fr = funding_to_bars((funding or {}).get(sym), tf.entry) if funding else None
+        feats[sym] = compute_features(df, htf, cfg.strategy, tf.entry, tf.trend, btc=btc,
+                                      funding=fr if fr is not None and len(fr) else None)
+    fund_arr = {s: f["funding"].to_numpy() for s, f in feats.items()}
+    ohlc = {s: f[["high", "low", "close", "atr"]].to_numpy() for s, f in feats.items()}
 
     index = sorted(set().union(*[f.index for f in feats.values()]))
     if trade_start is not None:
@@ -114,13 +130,15 @@ def run_backtest(cfg: Config, data: dict[str, pd.DataFrame], htf_data: dict[str,
             if i is None:
                 continue
             rows[sym] = i
-            r = f.iloc[i]
+            high, low, close, _ = ohlc[sym][i]
             # 1) Stop/TP innerhalb der Kerze
-            c = broker.check_exits(sym, float(r["high"]), float(r["low"]), stamp)
+            c = broker.check_exits(sym, float(high), float(low), stamp)
             if c:
                 trades.append(c)
                 risk.record_trade(c.pnl, now)
-            broker.mark(sym, float(r["close"]))
+            broker.mark(sym, float(close))
+            if sym in broker.positions:
+                broker.apply_funding(sym, float(fund_arr[sym][i]))
 
         equity = broker.equity()
         if risk.update_equity(equity, now):
@@ -132,26 +150,28 @@ def run_backtest(cfg: Config, data: dict[str, pd.DataFrame], htf_data: dict[str,
 
         for sym, i in rows.items():
             f = feats[sym]
-            r = f.iloc[i]
+            high, low, close, atr = ohlc[sym][i]
             pos = broker.positions.get(sym)
-            window = f.iloc[: i + 1]
             if pos:
-                reason = strategy.exit_signal(window, pos.side)
+                reason = strategy.exit_signal(f, pos.side, i) if i > 0 else None
                 if reason:
-                    c = broker.close(sym, float(r["close"]), reason, stamp)
+                    c = broker.close(sym, float(close), reason, stamp)
                     trades.append(c)
                     risk.record_trade(c.pnl, now)
                 else:
-                    strategy.update_stop(pos, float(r["high"]), float(r["low"]), float(r["atr"]))
+                    strategy.update_stop(pos, float(high), float(low), float(atr))
                 continue
-            sig = strategy.entry_signal(window)
+            if i < 1:
+                continue
+            sig = strategy.entry_signal(f, i)
             if not sig:
                 continue
             ok, _ = risk.can_open(equity, len(broker.positions), now)
             if not ok:
                 continue
             lim = limits.get(sym, {})
-            sized = risk.size(sig, equity, free_balance=broker.free_balance(), **lim)
+            open_risk = sum(p.open_risk for p in broker.positions.values())
+            sized = risk.size(sig, equity, free_balance=broker.free_balance(), open_risk=open_risk, **lim)
             if sized:
                 broker.open(sym, sig, sized, stamp)
         equity_curve.append((close_time, broker.equity()))
@@ -203,9 +223,9 @@ def load_csv(path: str) -> pd.DataFrame:
 
 # ---------- Parameter-Optimierung mit Out-of-Sample-Test ----------
 GRID = {
-    "strategy.entry_threshold": [0.5, 0.55, 0.6, 0.65],
-    "strategy.atr_stop_mult": [1.5, 2.0, 2.5],
-    "strategy.take_profit_r": [2.0, 2.5, 3.0],
+    "strategy.breakout_period": [20, 40, 55, 100],
+    "strategy.atr_stop_mult": [1.5, 2.0, 3.0],
+    "strategy.trailing_atr_mult": [4.0, 6.0, 8.0],
 }
 
 
@@ -217,7 +237,8 @@ def _with_params(cfg: Config, params: dict) -> Config:
     return c
 
 
-def optimize(cfg: Config, data: dict[str, pd.DataFrame], train_frac: float = 0.7, grid: dict | None = None) -> list[dict]:
+def optimize(cfg: Config, data: dict[str, pd.DataFrame], train_frac: float = 0.7, grid: dict | None = None,
+             funding: dict[str, pd.Series] | None = None, btc: pd.DataFrame | None = None) -> list[dict]:
     """Grid-Search auf den ersten 70% der Daten, Bewertung der besten Kombinationen auf den letzten 30%.
     Nur Parameter verwenden, die AUCH out-of-sample funktionieren – sonst ist es Overfitting."""
     grid = grid or GRID
@@ -228,11 +249,12 @@ def optimize(cfg: Config, data: dict[str, pd.DataFrame], train_frac: float = 0.7
     keys = list(grid)
     for combo in itertools.product(*grid.values()):
         params = dict(zip(keys, combo))
-        r = run_backtest(_with_params(cfg, params), train).metrics
+        r = run_backtest(_with_params(cfg, params), train, funding=funding, btc=btc).metrics
         score = r["return_pct"] / max(r["max_drawdown_pct"], 1.0) if r["trades"] >= 10 else -999
         results.append({"params": params, "train": r, "score": score})
     results.sort(key=lambda x: x["score"], reverse=True)
     for res in results[:5]:
         # Out-of-Sample: komplette Daten für die Indikatoren, gehandelt wird aber erst ab dem Split
-        res["test"] = run_backtest(_with_params(cfg, res["params"]), data, trade_start=split).metrics
+        res["test"] = run_backtest(_with_params(cfg, res["params"]), data, trade_start=split, funding=funding,
+                                   btc=btc).metrics
     return results[:5]

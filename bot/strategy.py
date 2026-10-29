@@ -15,15 +15,23 @@ class Signal:
     side: str
     price: float
     stop: float
-    take_profit: float
+    take_profit: float | None
     score: float
     setup: str
     atr: float
     reason: str
+    risk_factor: float = 1.0  # Anteil des normalen Risikos (z.B. 0.5 für Shorts)
 
     @property
     def risk_per_unit(self) -> float:
         return abs(self.price - self.stop)
+
+    def shift(self, delta: float) -> None:
+        """Einstieg verschieben, Abstände zu SL/TP bleiben gleich."""
+        self.price += delta
+        self.stop += delta
+        if self.take_profit is not None:
+            self.take_profit += delta
 
 
 @dataclass
@@ -33,7 +41,7 @@ class PositionState:
     entry: float
     stop: float
     initial_stop: float
-    take_profit: float
+    take_profit: float | None
     best_price: float  # höchster Kurs (long) bzw. tiefster Kurs (short) seit Einstieg
 
     @property
@@ -47,23 +55,67 @@ class PositionState:
         return move / self.initial_risk
 
 
+def _ok(x) -> bool:
+    return x is not None and x == x  # nicht None/NaN
+
+
 class Strategy:
     def __init__(self, cfg: StrategyConfig):
         self.cfg = cfg
 
     def entry_signal(self, feat: pd.DataFrame, i: int = -1, funding_rate: float | None = None) -> Signal | None:
-        """Prüft die Kerze i (Standard: letzte abgeschlossene Kerze) auf ein frisches Einstiegssignal.
+        """Prüft die Kerze i (Standard: letzte abgeschlossene Kerze) auf ein Einstiegssignal.
 
-        "Frisch" heißt: der Score überschreitet die Schwelle auf DIESER Kerze. Damit steigt der
-        Bot nach einem Stop-out nicht sofort wieder in dieselbe Bewegung ein.
+        funding_rate: aktuelle Funding-Rate pro 8h (live). Im Backtest steht die Summe der letzten
+        24h in der Spalte funding_24h.
         """
         if len(feat) < 2:
             return None
+        if self.cfg.type == "breakout":
+            return self._breakout(feat, i, funding_rate)
+        return self._confluence(feat, i, funding_rate)
+
+    # ---------- Donchian-Breakout (Standard) ----------
+    def _breakout(self, feat: pd.DataFrame, i: int, funding_rate: float | None) -> Signal | None:
+        row = feat.iloc[i]
+        price, atr = float(row["close"]), float(row["atr"])
+        hi, lo, btc_up = row["donch_high"], row["donch_low"], row["btc_up"]
+        if not (_ok(atr) and atr > 0 and _ok(hi) and _ok(lo)):
+            return None
+        side = LONG if price > hi else SHORT if price < lo else None
+        if side is None:
+            return None
+        if self.cfg.btc_filter:
+            if not _ok(btc_up):
+                return None
+            # Longs nur im BTC-Aufwärtstrend, Shorts nur im BTC-Abwärtstrend
+            if (side == LONG) != bool(btc_up):
+                return None
+        f24 = funding_rate * 3 if funding_rate is not None else row.get("funding_24h")
+        if _ok(f24):
+            # Kein Einstieg in überfüllte Trades (Longs zahlen hohes Funding bzw. Shorts)
+            if side == LONG and f24 >= self.cfg.max_funding_24h:
+                return None
+            if side == SHORT and f24 <= -self.cfg.max_funding_24h:
+                return None
+        dist = atr * self.cfg.atr_stop_mult
+        d = 1 if side == LONG else -1
+        tp = price + d * dist * self.cfg.take_profit_r if self.cfg.take_profit_r else None
+        level = hi if side == LONG else lo
+        reason = (f"breakout {side} {self.cfg.breakout_period}-Kerzen-{'Hoch' if side == LONG else 'Tief'} "
+                  f"{level:.6g} | ATR {atr:.4g} | BTC {'↑' if btc_up else '↓'}")
+        return Signal(side, price, price - d * dist, tp, 1.0, "breakout", atr, reason,
+                      risk_factor=1.0 if side == LONG else self.cfg.short_risk_factor)
+
+    # ---------- Alte Konfluenz-Strategie ----------
+    def _confluence(self, feat: pd.DataFrame, i: int, funding_rate: float | None) -> Signal | None:
+        """"Frisch" heißt: der Score überschreitet die Schwelle auf DIESER Kerze. Damit steigt der
+        Bot nach einem Stop-out nicht sofort wieder in dieselbe Bewegung ein."""
         row, prev = feat.iloc[i], feat.iloc[i - 1]
         th = self.cfg.entry_threshold
         atr = float(row["atr"])
         price = float(row["close"])
-        if not atr or atr != atr or row["regime"] == "volatile":
+        if not _ok(atr) or not atr or row["regime"] == "volatile":
             return None
 
         candidates = []
@@ -84,7 +136,8 @@ class Strategy:
 
         setup = str(row["setup"])
         stop_dist = atr * self.cfg.atr_stop_mult
-        tp_r = self.cfg.take_profit_r if setup == "trend" else min(self.cfg.take_profit_r, 1.5)
+        tp_r = self.cfg.take_profit_r or 2.5
+        tp_r = tp_r if setup == "trend" else min(tp_r, 1.5)
         if side == LONG:
             stop, tp = price - stop_dist, price + stop_dist * tp_r
         else:
@@ -96,8 +149,8 @@ class Strategy:
         return Signal(side, price, stop, tp, score, setup, atr, reason)
 
     def exit_signal(self, feat: pd.DataFrame, side: str, i: int = -1) -> str | None:
-        """Vorzeitiger Ausstieg bei starkem Gegensignal."""
-        if not self.cfg.exit_on_opposite_signal:
+        """Vorzeitiger Ausstieg bei starkem Gegensignal (nur Konfluenz-Strategie)."""
+        if not self.cfg.exit_on_opposite_signal or self.cfg.type != "confluence":
             return None
         row = feat.iloc[i]
         th = self.cfg.entry_threshold
@@ -108,7 +161,7 @@ class Strategy:
         return None
 
     def update_stop(self, pos: PositionState, high: float, low: float, atr: float) -> float:
-        """Break-Even und ATR-Trailing-Stop. Stops werden nur in Gewinnrichtung verschoben."""
+        """Break-Even und ATR-Trailing-Stop (Chandelier). Stops werden nur in Gewinnrichtung verschoben."""
         if pos.side == LONG:
             pos.best_price = max(pos.best_price, high)
         else:
@@ -116,12 +169,12 @@ class Strategy:
         best_r = pos.r_multiple(pos.best_price)
         new_stop = pos.stop
 
-        if best_r >= self.cfg.breakeven_at_r:
+        if self.cfg.breakeven_at_r is not None and best_r >= self.cfg.breakeven_at_r:
             # Break-Even + kleiner Puffer für Gebühren
             be = pos.entry + (0.1 * pos.initial_risk if pos.side == LONG else -0.1 * pos.initial_risk)
             new_stop = max(new_stop, be) if pos.side == LONG else min(new_stop, be)
 
-        if best_r >= self.cfg.trailing_start_r and atr == atr and atr > 0:
+        if best_r >= self.cfg.trailing_start_r and _ok(atr) and atr > 0:
             if pos.side == LONG:
                 new_stop = max(new_stop, pos.best_price - atr * self.cfg.trailing_atr_mult)
             else:

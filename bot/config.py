@@ -10,6 +10,7 @@ import yaml
 from dotenv import load_dotenv
 
 LIVE_CONFIRMATION = "I_UNDERSTAND_THE_RISK"
+DEFAULT_SYMBOLS = [f"{c}/USDT:USDT" for c in ("BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "LINK")]
 VALID_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"}
 
 
@@ -32,13 +33,21 @@ class ExchangeConfig:
 
 @dataclass
 class TimeframeConfig:
-    entry: str = "15m"
-    trend: str = "4h"
+    entry: str = "4h"
+    trend: str = "1d"
     history_bars: int = 400
 
 
 @dataclass
 class StrategyConfig:
+    # breakout   = Donchian-Trendfolge auf 4h (Standard, auf echten Daten 2021–2026 getestet)
+    # confluence = alte Indikator-Konfluenz (verlor im Backtest in jedem Jahr – nur zu Vergleichszwecken)
+    type: str = "breakout"
+    breakout_period: int = 55
+    btc_filter: bool = True
+    btc_filter_ema: int = 200
+    max_funding_24h: float = 0.0009
+    short_risk_factor: float = 0.5
     entry_threshold: float = 0.55
     require_trend_alignment: bool = True
     allow_mean_reversion: bool = True
@@ -49,22 +58,24 @@ class StrategyConfig:
     rsi_period: int = 14
     atr_period: int = 14
     atr_stop_mult: float = 2.0
-    take_profit_r: float = 2.5
-    breakeven_at_r: float = 1.0
-    trailing_start_r: float = 1.5
-    trailing_atr_mult: float = 2.5
-    exit_on_opposite_signal: bool = True
+    take_profit_r: float | None = None
+    breakeven_at_r: float | None = None
+    trailing_start_r: float = 0.0
+    trailing_atr_mult: float = 6.0
+    exit_on_opposite_signal: bool = False
     max_adverse_funding: float = 0.0005
 
 
 @dataclass
 class RiskConfig:
-    risk_per_trade_pct: float = 1.0
+    risk_per_trade_pct: float = 0.5
     max_leverage: int = 5
     max_position_notional_x: float = 3.0
-    max_open_positions: int = 2
+    max_open_positions: int = 4
+    # Summe des Risikos aller offenen Positionen (Abstand zum Stop) in % des Kontos
+    max_portfolio_risk_pct: float = 3.0
     max_daily_loss_pct: float = 4.0
-    max_drawdown_pct: float = 15.0
+    max_drawdown_pct: float = 30.0
     max_consecutive_losses: int = 4
     cooldown_minutes: int = 240
     liquidation_buffer_pct: float = 1.0
@@ -90,7 +101,7 @@ class NotificationConfig:
 class Config:
     mode: str = "paper"
     exchange: ExchangeConfig = field(default_factory=ExchangeConfig)
-    symbols: list[str] = field(default_factory=lambda: ["BTC/USDT:USDT"])
+    symbols: list[str] = field(default_factory=lambda: list(DEFAULT_SYMBOLS))
     timeframes: TimeframeConfig = field(default_factory=TimeframeConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
@@ -118,8 +129,14 @@ class Config:
                 raise ConfigError(f"Ungültige Zeiteinheit: {tf}")
         if not self.symbols:
             raise ConfigError("Mindestens ein Symbol angeben")
-        if self.timeframes.history_bars < self.strategy.ema_trend + 50:
-            raise ConfigError("timeframes.history_bars muss >= ema_trend + 50 sein")
+        st = self.strategy
+        if st.type not in ("breakout", "confluence"):
+            raise ConfigError("strategy.type muss breakout oder confluence sein")
+        need = max(st.ema_trend, st.btc_filter_ema, st.breakout_period) + 50
+        if self.timeframes.history_bars < need:
+            raise ConfigError(f"timeframes.history_bars muss >= {need} sein")
+        if not 0 < st.short_risk_factor <= 1:
+            raise ConfigError("short_risk_factor muss zwischen 0 und 1 liegen")
         r = self.risk
         if not 0 < r.risk_per_trade_pct <= 5:
             raise ConfigError("risk_per_trade_pct muss zwischen 0 und 5 liegen")

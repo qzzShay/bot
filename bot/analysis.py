@@ -61,10 +61,29 @@ def resample(df: pd.DataFrame, tf: str) -> pd.DataFrame:
 
 
 def compute_features(entry: pd.DataFrame, htf: pd.DataFrame | None, cfg: StrategyConfig,
-                     entry_tf: str, trend_tf: str) -> pd.DataFrame:
-    """Berechnet alle Indikatoren + Long-/Short-Scores pro Kerze."""
+                     entry_tf: str, trend_tf: str, btc: pd.DataFrame | None = None,
+                     funding: pd.Series | None = None) -> pd.DataFrame:
+    """Berechnet alle Indikatoren + Long-/Short-Scores pro Kerze.
+
+    btc:     BTC-Kerzen im Entry-Timeframe für den Marktregime-Filter (None → Symbol selbst)
+    funding: Funding-Zahlungen je Kerze (Backtest); live wird die aktuelle Rate separat geprüft
+    """
     df = entry.copy()
     c = df["close"]
+    # ---------- Breakout (Donchian) ----------
+    n = cfg.breakout_period
+    df["donch_high"] = df["high"].rolling(n).max().shift(1)
+    df["donch_low"] = df["low"].rolling(n).min().shift(1)
+    ref = btc if btc is not None else entry
+    btc_ema = ind.ema(ref["close"], cfg.btc_filter_ema)
+    btc_up = (ref["close"] > btc_ema).where(btc_ema.notna())
+    df["btc_up"] = btc_up.reindex(df.index).ffill()
+    if funding is not None:
+        df["funding"] = funding.reindex(df.index).fillna(0.0)
+        bars_24h = max(1, int(pd.Timedelta("1D") / tf_delta(entry_tf)))
+        df["funding_24h"] = df["funding"].rolling(bars_24h, min_periods=1).sum()
+    else:
+        df["funding"], df["funding_24h"] = 0.0, np.nan
     df["ema_fast"] = ind.ema(c, cfg.ema_fast)
     df["ema_slow"] = ind.ema(c, cfg.ema_slow)
     df["ema_trend"] = ind.ema(c, cfg.ema_trend)
@@ -172,6 +191,9 @@ class MarketSnapshot:
     support: list[float] = field(default_factory=list)
     resistance: list[float] = field(default_factory=list)
     funding_rate: float | None = None
+    donch_high: float = float("nan")
+    donch_low: float = float("nan")
+    btc_up: bool | None = None
 
     def summary(self) -> str:
         bias = {1: "BULLISH", -1: "BEARISH", 0: "NEUTRAL"}[int(self.htf_bias)]
@@ -184,7 +206,9 @@ class MarketSnapshot:
             f"  Volatilität (ATR): {self.atr_pct * 100:.2f}% | MACD-Hist {self.macd_hist:+.4g} | "
             f"BB%B {self.bb_pct_b:.2f} | Volumen x{self.vol_ratio:.2f}{fr}\n"
             f"  Support: {sup} | Resistance: {res}\n"
-            f"  Score LONG {self.long_score:.2f} | SHORT {self.short_score:.2f} | Setup: {self.setup}"
+            f"  Breakout-Kanal: {self.donch_low:.6g} – {self.donch_high:.6g} | BTC-Regime: "
+            f"{ {True: 'AUFWÄRTS', False: 'ABWÄRTS'}.get(self.btc_up, '?') }\n"
+            f"  Konfluenz-Score LONG {self.long_score:.2f} | SHORT {self.short_score:.2f} | Setup: {self.setup}"
         )
 
 
@@ -198,4 +222,6 @@ def snapshot(symbol: str, feat: pd.DataFrame, funding_rate: float | None = None)
         vol_ratio=float(row["vol_ratio"]), long_score=float(row["long_score"]),
         short_score=float(row["short_score"]), setup=str(row["setup"]),
         support=sup, resistance=res, funding_rate=funding_rate,
+        donch_high=float(row["donch_high"]), donch_low=float(row["donch_low"]),
+        btc_up=None if row["btc_up"] != row["btc_up"] else bool(row["btc_up"]),
     )

@@ -2,6 +2,9 @@
 #  CryptoBot Konfiguration
 #  Kopieren nach config/config.yaml und anpassen.
 #  API-Keys gehören NICHT hierher, sondern in die .env Datei!
+#
+#  Die Standardwerte stammen aus Backtests auf echten Binance-Futures-Daten
+#  (2021–2026, inkl. Gebühren, Slippage und Funding) – siehe README.
 # =====================================================================
 
 # paper  = echte Live-Marktdaten, simulierte Orders (kein Geld im Risiko)
@@ -22,55 +25,75 @@ exchange:
   taker_fee: 0.0005
   slippage: 0.0003
 
+# Liquide Majors. Im Test lief die Strategie mit diesen Coins deutlich besser als mit
+# kleineren Altcoins (siehe README) – zusätzliche Coins nur nach eigenem Backtest aufnehmen.
 symbols:
   - BTC/USDT:USDT
   - ETH/USDT:USDT
   - SOL/USDT:USDT
+  - BNB/USDT:USDT
+  - XRP/USDT:USDT
+  - DOGE/USDT:USDT
+  - ADA/USDT:USDT
+  - AVAX/USDT:USDT
+  - LINK/USDT:USDT
 
 timeframes:
-  entry: 15m          # Zeiteinheit für Einstiege
-  trend: 4h           # übergeordneter Trendfilter (Multi-Timeframe)
+  entry: 4h           # Zeiteinheit für Signale (1h und kleiner verlieren nach Kosten!)
+  trend: 1d           # nur für die Konfluenz-Strategie / Analyse-Anzeige
   history_bars: 400   # wie viele Kerzen für die Analyse geladen werden
 
 strategy:
-  # Mindest-Score (0..1) für einen Einstieg. Höher = weniger, aber bessere Trades.
+  # breakout   = Donchian-Trendfolge (Standard)
+  # confluence = alte Indikator-Konfluenz (verlor im Backtest in jedem Jahr – nur zum Vergleich)
+  type: breakout
+  # Einstieg, wenn der Schlusskurs über dem Hoch (Long) bzw. unter dem Tief (Short)
+  # der letzten N Kerzen liegt. Getestet robust zwischen 20 und 100.
+  breakout_period: 55
+  # Longs nur, wenn BTC über seinem EMA liegt, Shorts nur darunter (Marktregime)
+  btc_filter: true
+  btc_filter_ema: 200
+  # Kein Einstieg, wenn das Funding der letzten 24h stark gegen die Position läuft (0.0009 = 0.09%)
+  max_funding_24h: 0.0009
+  # Shorts mit halbem Risiko (Krypto hat langfristig Aufwärtsdrift; Shorts dienen als Bärenmarkt-Schutz)
+  short_risk_factor: 0.5
+  atr_period: 14
+  # Anfangs-Stop = ATR * Faktor
+  atr_stop_mult: 2.0
+  # Trailing-Stop (Chandelier): höchster Kurs seit Einstieg − ATR * Faktor. Getestet robust 5–8.
+  trailing_atr_mult: 6.0
+  trailing_start_r: 0.0
+  # Festes Kursziel / Break-Even: bei Trendfolge AUS (Gewinner laufen lassen). null = aus
+  take_profit_r: null
+  breakeven_at_r: null
+  exit_on_opposite_signal: false
+
+  # --- nur für type: confluence ---
   entry_threshold: 0.55
-  # Nur in Richtung des übergeordneten Trends handeln
   require_trend_alignment: true
-  # Mean-Reversion-Trades in Seitwärtsphasen erlauben (ADX niedrig)
   allow_mean_reversion: true
   adx_trend_min: 22
   ema_fast: 21
   ema_slow: 55
   ema_trend: 200
   rsi_period: 14
-  atr_period: 14
-  # Stop-Loss = ATR * Faktor
-  atr_stop_mult: 2.0
-  # Take-Profit als Vielfaches des Risikos (R)
-  take_profit_r: 2.5
-  # Bei +X R Stop auf Break-Even ziehen
-  breakeven_at_r: 1.0
-  # Trailing-Stop (Chandelier) ab +X R, Abstand ATR * Faktor
-  trailing_start_r: 1.5
-  trailing_atr_mult: 2.5
-  # Position bei starkem Gegensignal vorzeitig schließen
-  exit_on_opposite_signal: true
-  # Kein Einstieg, wenn Funding-Rate stark gegen die Position läuft (pro 8h, 0.0005 = 0.05%)
   max_adverse_funding: 0.0005
 
 risk:
-  # Risiko pro Trade in % des Kontos (Abstand Entry→Stop)
-  risk_per_trade_pct: 1.0
-  # Maximaler Hebel. Der Bot nutzt nur so viel Hebel wie für die Positionsgröße nötig.
+  # Risiko pro Trade in % des Kontos (Abstand Entry→Stop). 0.5% hielt den Drawdown im Test bei ~20%.
+  risk_per_trade_pct: 0.5
+  # Maximales Gesamtrisiko aller offenen Positionen in % (Kryptos fallen oft gemeinsam)
+  max_portfolio_risk_pct: 3.0
+  max_open_positions: 4
+  # Maximaler Hebel. Der Bot nutzt nur so viel Hebel wie für die Positionsgröße nötig (meist 1–2x).
   max_leverage: 5
   # Maximale Positionsgröße (Notional) als Vielfaches des Kontos
   max_position_notional_x: 3.0
-  max_open_positions: 2
   # Tagesverlust-Limit in % → für den Rest des Tages (UTC) keine neuen Trades
   max_daily_loss_pct: 4.0
-  # Drawdown vom Höchststand in % → Kill-Switch: alles schließen, Bot stoppt neue Trades
-  max_drawdown_pct: 15.0
+  # Drawdown vom Höchststand in % → Kill-Switch: alles schließen, Bot stoppt neue Trades.
+  # Im Backtest lag der max. Drawdown bei ~19–27% – deshalb 30%.
+  max_drawdown_pct: 30.0
   # Pause nach X Verlusttrades in Folge (Minuten)
   max_consecutive_losses: 4
   cooldown_minutes: 240
@@ -81,7 +104,7 @@ risk:
 
 engine:
   # Wie oft (Sekunden) die Schleife läuft
-  poll_seconds: 20
+  poll_seconds: 30
   db_path: data/cryptobot.sqlite
   log_level: INFO
   log_file: data/cryptobot.log

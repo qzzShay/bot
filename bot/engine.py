@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from .analysis import compute_features, snapshot, tf_delta
+from .analysis import compute_features, tf_delta
 from .broker import ClosedTrade, LiveBroker, PaperBroker, Position, now_iso
 from .config import Config
 from .exchange import Exchange
@@ -18,6 +18,8 @@ from .storage import Storage
 from .strategy import Strategy
 
 log = logging.getLogger(__name__)
+
+BTC_SYMBOL = "BTC/USDT:USDT"
 
 
 class Engine:
@@ -36,6 +38,7 @@ class Engine:
             LiveBroker(self.x, cfg.exchange) if cfg.is_live else PaperBroker(cfg.exchange, cfg.risk.paper_start_equity)
         )
         self.last_bar: dict[str, pd.Timestamp] = {}
+        self._btc_cache: pd.DataFrame | None = None
         self.running = True
         self._last_equity_log = 0.0
 
@@ -79,7 +82,18 @@ class Engine:
         tf = self.cfg.timeframes
         entry = self.x.fetch_ohlcv(symbol, tf.entry, tf.history_bars)
         trend = self.x.fetch_ohlcv(symbol, tf.trend, tf.history_bars)
-        return compute_features(entry, trend, self.cfg.strategy, tf.entry, tf.trend)
+        return compute_features(entry, trend, self.cfg.strategy, tf.entry, tf.trend, btc=self.btc_data())
+
+    def btc_data(self) -> pd.DataFrame | None:
+        """BTC-Kerzen für den Marktregime-Filter (einmal pro Kerze geladen)."""
+        if not self.cfg.strategy.btc_filter:
+            return None
+        tf = self.cfg.timeframes
+        cached = self._btc_cache
+        if cached is not None and pd.Timestamp.now(tz="UTC") < cached.index[-1] + 2 * tf_delta(tf.entry):
+            return cached
+        self._btc_cache = self.x.fetch_ohlcv(BTC_SYMBOL, tf.entry, tf.history_bars)
+        return self._btc_cache
 
     def _bar_due(self, symbol: str, now: pd.Timestamp) -> bool:
         last = self.last_bar.get(symbol)
@@ -141,11 +155,11 @@ class Engine:
             log.info("%s: Signal %s ignoriert – %s", symbol, sig.side, why)
             return
         # Kurs kann sich seit Kerzenschluss bewegt haben → SL/TP mit gleichem Abstand zum aktuellen Kurs
-        shift = self.x.last_price(symbol) - sig.price
-        sig.price, sig.stop, sig.take_profit = sig.price + shift, sig.stop + shift, sig.take_profit + shift
+        sig.shift(self.x.last_price(symbol) - sig.price)
         lim = self.x.limits(symbol)
+        open_risk = sum(p.open_risk for p in self.broker.positions.values())
         sized = self.risk.size(sig, equity, lim.min_qty, lim.qty_step, lim.min_notional, lim.max_leverage,
-                               free_balance=self.broker.free_balance())
+                               free_balance=self.broker.free_balance(), open_risk=open_risk)
         if not sized:
             log.info("%s: Signal %s – Positionsgröße unzulässig (zu klein/Hebel/Liquidation)", symbol, sig.side)
             return
@@ -158,7 +172,8 @@ class Engine:
         )
         self.notify.send(
             f"🚀 {symbol} {pos.side.upper()} eröffnet @ {pos.entry:.6g}\n"
-            f"Menge {pos.qty:.6g} | Hebel {pos.leverage}x | SL {pos.stop:.6g} | TP {pos.take_profit:.6g}\n"
+            f"Menge {pos.qty:.6g} | Hebel {pos.leverage}x | SL {pos.stop:.6g} | "
+            f"TP {f'{pos.take_profit:.6g}' if pos.take_profit else 'Trailing'}\n"
             f"Risiko {sized.risk_amount:.2f} {self.cfg.exchange.quote_currency} | Liq ~{sized.liquidation_price:.6g}\n"
             f"{sig.reason}"
         )
@@ -195,10 +210,16 @@ class Engine:
             if self.last_bar.get(sym) == bar:
                 continue
             self.last_bar[sym] = bar
-            snap = snapshot(sym, feat)
-            log.info("%s %s | %s | L %.2f S %.2f | ADX %.1f RSI %.1f", sym, bar.strftime("%H:%M"), snap.regime,
-                     snap.long_score, snap.short_score, snap.adx, snap.rsi)
+            row = feat.iloc[-1]
+            log.info("%s %s | Kurs %.6g | Kanal %.6g–%.6g | ATR %.4g | BTC %s | ADX %.1f RSI %.1f", sym,
+                     bar.strftime("%m-%d %H:%M"), row["close"], row["donch_low"], row["donch_high"], row["atr"],
+                     {True: "↑", False: "↓"}.get(row["btc_up"], "?"), row["adx"], row["rsi"])
             pos = self.broker.positions.get(sym)
+            if pos and isinstance(self.broker, PaperBroker):
+                # Funding simulieren (live bucht die Börse das selbst): Rate pro 8h anteilig je Kerze
+                fr = self.x.funding_rate(sym)
+                if fr:
+                    self.broker.apply_funding(sym, fr * tf_delta(self.cfg.timeframes.entry) / pd.Timedelta("8h"))
             if pos:
                 self._manage_position(sym, pos, feat)
             else:

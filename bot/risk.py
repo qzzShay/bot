@@ -109,7 +109,7 @@ class RiskManager:
     # ---------- Positionsgröße ----------
     def size(self, signal: Signal, equity: float, min_qty: float = 0.0, qty_step: float = 0.0,
              min_notional: float = 0.0, max_leverage_exchange: int | None = None,
-             free_balance: float | None = None) -> SizedOrder | None:
+             free_balance: float | None = None, open_risk: float = 0.0) -> SizedOrder | None:
         """Risikobasierte Positionsgröße:  qty = (Equity * Risiko%) / Abstand Entry→Stop.
 
         Der Hebel ergibt sich aus Notional / Equity und wird so gewählt, dass der
@@ -117,7 +117,12 @@ class RiskManager:
         """
         if signal.risk_per_unit <= 0 or equity <= 0:
             return None
-        risk_amount = equity * self.cfg.risk_per_trade_pct / 100
+        risk_amount = equity * self.cfg.risk_per_trade_pct / 100 * signal.risk_factor
+        # Gesamtrisiko aller offenen Positionen begrenzen (Kryptos sind stark korreliert)
+        budget = equity * self.cfg.max_portfolio_risk_pct / 100 - max(open_risk, 0.0)
+        if budget < risk_amount * 0.25:
+            return None
+        risk_amount = min(risk_amount, budget)
         qty = risk_amount / signal.risk_per_unit
 
         max_lev = self.cfg.max_leverage

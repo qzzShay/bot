@@ -36,46 +36,81 @@ def cmd_run(cfg, args):
 
 def cmd_analyze(cfg, args):
     from .analysis import compute_features, snapshot
+    from .engine import BTC_SYMBOL
     from .exchange import Exchange
     from .strategy import Strategy
 
     x = Exchange(cfg.exchange, authenticated=False)
     strat = Strategy(cfg.strategy)
     tf = cfg.timeframes
+    btc = x.fetch_ohlcv(BTC_SYMBOL, tf.entry, tf.history_bars) if cfg.strategy.btc_filter else None
     for sym in args.symbols or cfg.symbols:
         entry = x.fetch_ohlcv(sym, tf.entry, tf.history_bars)
         trend = x.fetch_ohlcv(sym, tf.trend, tf.history_bars)
-        feat = compute_features(entry, trend, cfg.strategy, tf.entry, tf.trend)
-        print(snapshot(sym, feat, x.funding_rate(sym)).summary())
-        sig = strat.entry_signal(feat)
+        feat = compute_features(entry, trend, cfg.strategy, tf.entry, tf.trend, btc=btc)
+        fr = x.funding_rate(sym)
+        print(snapshot(sym, feat, fr).summary())
+        sig = strat.entry_signal(feat, funding_rate=fr)
         if sig:
-            print(f"  >>> SIGNAL: {sig.side.upper()} @ {sig.price:.6g} SL {sig.stop:.6g} TP {sig.take_profit:.6g}")
+            tp = f"{sig.take_profit:.6g}" if sig.take_profit else "Trailing"
+            print(f"  >>> SIGNAL: {sig.side.upper()} @ {sig.price:.6g} SL {sig.stop:.6g} TP {tp} ({sig.reason})")
         print()
 
 
 def _load_data(cfg, args):
+    """Liefert (data, limits, funding, btc). Standardquelle: offizielle Binance-Archive (inkl. Funding)."""
+    import pandas as pd
+
     from .backtest import load_csv, load_or_fetch
+    from .engine import BTC_SYMBOL
     from .exchange import Exchange
 
+    tf = cfg.timeframes.entry
     if args.csv:
-        return {args.symbols[0] if args.symbols else "CSV": load_csv(args.csv)}, {}
-    x = Exchange(cfg.exchange, authenticated=False)
-    data, limits = {}, {}
-    for sym in args.symbols or cfg.symbols:
-        log.info("Lade %s %s ab %s ...", sym, cfg.timeframes.entry, args.start)
-        data[sym] = load_or_fetch(x, sym, cfg.timeframes.entry, args.start, args.end)
-        lim = x.limits(sym)
-        limits[sym] = dict(min_qty=lim.min_qty, qty_step=lim.qty_step, min_notional=lim.min_notional,
-                           max_leverage_exchange=lim.max_leverage)
-    return data, limits
+        return {args.symbols[0] if args.symbols else "CSV": load_csv(args.csv)}, {}, None, None
+    symbols = list(args.symbols or cfg.symbols)
+    # Vorlauf, damit Indikatoren (EMA200 etc.) zum Start bereits eingeschwungen sind
+    warm_start = (pd.Timestamp(args.start) - cfg.timeframes.history_bars * pd.Timedelta(TF_HOURS[tf], "h")).strftime("%Y-%m-%d")
+    data, limits, funding = {}, {}, {}
+    if args.source == "vision":
+        from .datasets import download_funding, download_klines
+
+        for sym in dict.fromkeys(symbols + [BTC_SYMBOL]):
+            log.info("Lade %s %s ab %s (Binance-Archiv) ...", sym, tf, warm_start)
+            data[sym] = download_klines(sym, tf, warm_start, args.end)[["open", "high", "low", "close", "volume"]]
+            funding[sym] = download_funding(sym, warm_start, args.end)
+    else:
+        x = Exchange(cfg.exchange, authenticated=False)
+        for sym in dict.fromkeys(symbols + [BTC_SYMBOL]):
+            log.info("Lade %s %s ab %s ...", sym, tf, warm_start)
+            data[sym] = load_or_fetch(x, sym, tf, warm_start, args.end)
+            lim = x.limits(sym)
+            limits[sym] = dict(min_qty=lim.min_qty, qty_step=lim.qty_step, min_notional=lim.min_notional,
+                               max_leverage_exchange=lim.max_leverage)
+    btc = data[BTC_SYMBOL]
+    data = {s: data[s] for s in symbols}
+    return data, limits, funding or None, btc
+
+
+TF_HOURS = {"1m": 1 / 60, "3m": 0.05, "5m": 1 / 12, "15m": 0.25, "30m": 0.5, "1h": 1, "2h": 2, "4h": 4,
+            "6h": 6, "12h": 12, "1d": 24}
 
 
 def cmd_backtest(cfg, args):
+    import pandas as pd
+
     from .backtest import run_backtest, save_result
 
-    data, limits = _load_data(cfg, args)
-    res = run_backtest(cfg, data, limits=limits)
+    data, limits, funding, btc = _load_data(cfg, args)
+    start = None if args.csv else pd.Timestamp(args.start, tz="UTC")
+    res = run_backtest(cfg, data, limits=limits, funding=funding, btc=btc, trade_start=start)
     print(res.report())
+    eq = res.equity
+    if len(eq):
+        yearly = eq.resample("YE").last()
+        prev = [res.start_equity] + list(yearly.values[:-1])
+        print(" Jahresrenditen     : " + " | ".join(f"{t.year}: {(v / p - 1) * 100:+.1f}%"
+                                                for t, v, p in zip(yearly.index, yearly.values, prev)))
     out = save_result(res)
     print(f"Trades & Equity-Kurve gespeichert in {out}/")
 
@@ -83,9 +118,9 @@ def cmd_backtest(cfg, args):
 def cmd_optimize(cfg, args):
     from .backtest import optimize
 
-    data, _ = _load_data(cfg, args)
+    data, _, funding, btc = _load_data(cfg, args)
     print("Optimiere (kann einige Minuten dauern) ...")
-    for i, r in enumerate(optimize(cfg, data), 1):
+    for i, r in enumerate(optimize(cfg, data, funding=funding, btc=btc), 1):
         tr, te = r["train"], r["test"]
         print(f"\n#{i} {json.dumps(r['params'])}")
         print(f"   Training: {tr['return_pct']:+.1f}% | DD {tr['max_drawdown_pct']:.1f}% | {tr['trades']} Trades | PF {tr['profit_factor']:.2f}")
@@ -128,7 +163,7 @@ def cmd_status(cfg, args):
     print("\nOffene Positionen:")
     for t in st.open_trades(key):
         print(f"  #{t['id']} {t['symbol']} {t['side']} {t['qty']:.6g} @ {t['entry']:.6g} | SL {t['stop']:.6g} | "
-              f"TP {t['take_profit']:.6g} | {t['leverage']}x | seit {t['opened_at']}")
+              f"TP {t['take_profit'] or 0:.6g} | {t['leverage']}x | seit {t['opened_at']}")
     closed = st.closed_trades(key, args.limit)
     print(f"\nLetzte {len(closed)} Trades:")
     for t in closed:
@@ -168,9 +203,11 @@ def main(argv=None):
     a.add_argument("symbols", nargs="*")
     for name in ("backtest", "optimize"):
         b = sub.add_parser(name)
-        b.add_argument("--start", default="2025-01-01")
+        b.add_argument("--start", default="2022-01-01")
         b.add_argument("--end", default=None)
         b.add_argument("--csv", default=None, help="eigene OHLCV-CSV statt Börsendaten")
+        b.add_argument("--source", choices=("vision", "exchange"), default="vision",
+                       help="vision = offizielle Binance-Archive inkl. Funding (schnell), exchange = Börsen-API")
         b.add_argument("symbols", nargs="*")
     sub.add_parser("check")
     s = sub.add_parser("status")

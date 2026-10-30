@@ -122,6 +122,7 @@ def run_backtest(cfg: Config, data: dict[str, pd.DataFrame], htf_data: dict[str,
     trades: list[ClosedTrade] = []
     equity_curve = []
     delta = tf_delta(tf.entry)
+    day_trades: dict = {}
 
     for ts in index:
         close_time = ts + delta
@@ -142,6 +143,10 @@ def run_backtest(cfg: Config, data: dict[str, pd.DataFrame], htf_data: dict[str,
             broker.mark(sym, float(close))
             if sym in broker.positions:
                 broker.apply_funding(sym, float(fund_arr[sym][i]))
+                if strategy.session_flat_due(close_time, broker.positions[sym].opened_at):
+                    c = broker.close(sym, float(close), "Tagesende", stamp)
+                    trades.append(c)
+                    risk.record_trade(c.pnl, now)
 
         equity = broker.equity()
         if risk.update_equity(equity, now):
@@ -164,7 +169,10 @@ def run_backtest(cfg: Config, data: dict[str, pd.DataFrame], htf_data: dict[str,
                 else:
                     strategy.update_stop(pos, float(high), float(low), float(atr))
                 continue
-            if i < 1:
+            if i < 1 or not strategy.session_entry_allowed(close_time):
+                continue
+            day_key = (sym, close_time.date())
+            if cfg.strategy.day_trading and day_trades.get(day_key, 0) >= cfg.strategy.max_trades_per_day:
                 continue
             sig = strategy.entry_signal(f, i)
             if not sig or (cfg.news.enabled and news.macro_blocked(now)):
@@ -177,6 +185,7 @@ def run_backtest(cfg: Config, data: dict[str, pd.DataFrame], htf_data: dict[str,
             sized = risk.size(sig, equity, free_balance=broker.free_balance(), open_risk=open_risk, **lim)
             if sized:
                 broker.open(sym, sig, sized, stamp)
+                day_trades[day_key] = day_trades.get(day_key, 0) + 1
         equity_curve.append((close_time, broker.equity()))
 
     # Offene Positionen zum Schluss glattstellen

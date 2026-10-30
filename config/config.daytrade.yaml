@@ -1,0 +1,153 @@
+# =====================================================================
+#  CryptoBot Konfiguration
+#  Kopieren nach config/config.yaml und anpassen.
+#  API-Keys gehören NICHT hierher, sondern in die .env Datei!
+#
+#  DAY-TRADING-VARIANTE: alle Positionen werden am selben UTC-Tag geschlossen.
+#
+#  ⚠️  Im Backtest auf echten Daten 2021–2026 hatte KEINE getestete Day-Trading-
+#  Strategie nach Kosten eine Gewinnkante (Ergebnis ≈ ±0, siehe README). Diese
+#  Konfiguration ist zum Beobachten im Paper-/Demo-Betrieb gedacht.
+#  Für Echtgeld ist config.example.yaml (Swing, 4h) die getestete Wahl.
+#
+#  Nutzung:  python -m bot -c config/config.daytrade.yaml run
+# =====================================================================
+
+# paper  = echte Live-Marktdaten, simulierte Orders (kein Geld im Risiko)
+# live   = echte Orders auf der Börse (Testnet ODER echtes Konto, siehe exchange.sandbox)
+mode: paper
+
+exchange:
+  # ccxt-ID der Börse: binanceusdm (Binance USDT-M Futures), bybit, okx, bitget
+  name: binanceusdm
+  # Nur relevant für mode: live  (Paper-Modus nutzt immer echte Live-Kurse der Hauptbörse)
+  # none    = echtes Konto  → ECHTES GELD
+  # testnet = Testnet/Sandbox der Börse (Bybit, OKX)
+  # demo    = Demo-Trading mit Spielgeld (Binance Futures, Bybit)
+  sandbox: demo
+  margin_mode: isolated        # isolated (empfohlen) oder cross
+  quote_currency: USDT
+  # Gebühren für Paper-Trading und Backtest (Taker, Anteil, 0.0005 = 0.05%)
+  taker_fee: 0.0005
+  slippage: 0.0003
+
+# Liquide Majors. Im Test lief die Strategie mit diesen Coins deutlich besser als mit
+# kleineren Altcoins (siehe README) – zusätzliche Coins nur nach eigenem Backtest aufnehmen.
+symbols:
+  - BTC/USDT:USDT
+  - ETH/USDT:USDT
+  - SOL/USDT:USDT
+  - BNB/USDT:USDT
+  - XRP/USDT:USDT
+  - DOGE/USDT:USDT
+  - ADA/USDT:USDT
+  - AVAX/USDT:USDT
+  - LINK/USDT:USDT
+
+timeframes:
+  entry: 1h
+  trend: 4h
+  history_bars: 400
+
+strategy:
+  # breakout   = Donchian-Trendfolge (Standard)
+  # confluence = alte Indikator-Konfluenz (verlor im Backtest in jedem Jahr – nur zum Vergleich)
+  type: breakout
+  # Einstieg, wenn der Schlusskurs über dem Hoch (Long) bzw. unter dem Tief (Short)
+  # der letzten N Kerzen liegt. Getestet robust zwischen 20 und 100.
+  breakout_period: 48          # Hoch/Tief der letzten 48 Stunden
+  # Longs nur, wenn BTC über seinem EMA liegt, Shorts nur darunter (Marktregime)
+  btc_filter: true
+  btc_filter_ema: 200
+  # Kein Einstieg, wenn das Funding der letzten 24h stark gegen die Position läuft (0.0009 = 0.09%)
+  max_funding_24h: 0.0009
+  # Shorts mit halbem Risiko (Krypto hat langfristig Aufwärtsdrift; Shorts dienen als Bärenmarkt-Schutz)
+  short_risk_factor: 0.5
+  atr_period: 14
+  # Anfangs-Stop = ATR * Faktor
+  atr_stop_mult: 2.0
+  # Trailing-Stop (Chandelier): höchster Kurs seit Einstieg − ATR * Faktor. Getestet robust 5–8.
+  trailing_atr_mult: 3.0
+  trailing_start_r: 0.0
+  # Festes Kursziel / Break-Even: bei Trendfolge AUS (Gewinner laufen lassen). null = aus
+  take_profit_r: null
+  breakeven_at_r: null
+  exit_on_opposite_signal: false
+  # --- Day-Trading ---
+  day_trading: true
+  last_entry_hour_utc: 21      # keine neuen Einstiege nach 21:00 UTC
+  flat_hour_utc: 0             # um 00:00 UTC (= 01:00/02:00 deutscher Zeit) alles schließen
+  max_trades_per_day: 1        # pro Coin
+  # Echtgeld ist für diesen Modus gesperrt (Backtest 2022–2026: −44 %). Nur auf eigenes Risiko auf true.
+  day_trading_allow_real_money: false
+
+  # --- nur für type: confluence ---
+  entry_threshold: 0.55
+  require_trend_alignment: true
+  allow_mean_reversion: true
+  adx_trend_min: 22
+  ema_fast: 21
+  ema_slow: 55
+  ema_trend: 200
+  rsi_period: 14
+  max_adverse_funding: 0.0005
+
+risk:
+  # Risiko pro Trade in % des Kontos (Abstand Entry→Stop). 0.5% hielt den Drawdown im Test bei ~20%.
+  risk_per_trade_pct: 0.5
+  # Maximales Gesamtrisiko aller offenen Positionen in % (Kryptos fallen oft gemeinsam)
+  max_portfolio_risk_pct: 3.0
+  max_open_positions: 4
+  # Maximaler Hebel. Der Bot nutzt nur so viel Hebel wie für die Positionsgröße nötig (meist 1–2x).
+  max_leverage: 5
+  # Maximale Positionsgröße (Notional) als Vielfaches des Kontos
+  max_position_notional_x: 3.0
+  # Tagesverlust-Limit in % → für den Rest des Tages (UTC) keine neuen Trades
+  max_daily_loss_pct: 4.0
+  # Drawdown vom Höchststand in % → Kill-Switch: alles schließen, Bot stoppt neue Trades.
+  # Im Backtest lag der max. Drawdown bei ~19–27% – deshalb 30%.
+  max_drawdown_pct: 30.0
+  # Pause nach X Verlusttrades in Folge (Minuten)
+  max_consecutive_losses: 4
+  cooldown_minutes: 240
+  # Liquidationspreis muss mindestens so viel % weiter weg sein als der Stop
+  liquidation_buffer_pct: 1.0
+  # Startkapital für Paper-Trading und Backtest
+  paper_start_equity: 1000
+
+engine:
+  # Wie oft (Sekunden) die Schleife läuft
+  poll_seconds: 30
+  db_path: data/cryptobot-daytrade.sqlite
+  log_level: INFO
+  log_file: data/cryptobot-daytrade.log
+
+# ---------------------------------------------------------------------
+#  News & Ereignisse – Risikoschutz, KEIN Handelssignal (Begründung im README)
+# ---------------------------------------------------------------------
+news:
+  enabled: true
+  poll_minutes: 5
+  # Keine NEUEN Trades rund um FOMC-Zinsentscheidungen und wichtige US-Daten (CPI, NFP, PCE, GDP …)
+  macro_filter: true
+  macro_block_before_hours: 4
+  macro_block_after_hours: 4
+  # Keine NEUEN Trades auf einem Coin nach kritischen Meldungen (Hack, Klage, Depeg, Netzwerk-Ausfall …)
+  headline_filter: true
+  headline_block_hours: 12
+  # Sperre erst, wenn so viele unabhängige Quellen berichten (Binance-Ankündigungen zählen sofort)
+  headline_min_sources: 2
+  # Kündigt Binance ein Futures-Delisting eines gehandelten Coins an → Position schließen
+  close_on_delisting: true
+  feeds:
+    - https://cointelegraph.com/rss
+    - https://www.theblock.co/rss.xml
+    - https://decrypt.co/feed
+    - https://www.coindesk.com/arc/outboundfeeds/rss/
+  # Fear & Greed als Filter: im Backtest NICHT stabil besser → aus (wird trotzdem angezeigt)
+  fear_greed_filter: false
+  greed_max: 80
+  fear_min: 20
+
+notifications:
+  telegram_enabled: false   # Token/Chat-ID in .env setzen

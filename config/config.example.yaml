@@ -67,6 +67,8 @@ strategy:
   take_profit_r: null
   breakeven_at_r: null
   exit_on_opposite_signal: false
+  # Day-Trading (alles am selben Tag schließen): siehe config/config.daytrade.yaml
+  day_trading: false
 
   # --- nur für type: confluence ---
   entry_threshold: 0.55

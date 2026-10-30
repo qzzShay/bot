@@ -22,6 +22,7 @@ entwickelt und mit Coins und Zeiträumen geprüft, die bei der Entwicklung nicht
 | **Marktregime** | BTC-Trendfilter: Longs nur, wenn BTC über EMA200 (4h), Shorts nur darunter |
 | **Funding** | Kein Einstieg in überfüllte Trades (24h-Funding stark gegen die Position); Funding-Kosten im Backtest und Paper-Modus |
 | **News** | Wirtschaftskalender (FOMC, CPI, NFP …), Krypto-Schlagzeilen (Cointelegraph, The Block, Decrypt, CoinDesk), Binance-Delistings, Fear & Greed – als Risikoschutz mit Telegram-Alarm |
+| **Day-Trading** | Optionaler Modus (`config/config.daytrade.yaml`): 1h-Signale, Schließung aller Positionen um 00:00 UTC – im Backtest verlustreich, daher nur Paper/Demo |
 | **Alternative** | Alte Indikator-Konfluenz (`strategy.type: confluence`) bleibt wählbar – verlor aber im Backtest in jedem Jahr |
 | **Hebel** | Automatisch: so wenig wie nötig, max. `max_leverage`; Liquidationspreis muss *hinter* dem Stop liegen |
 | **Positionsgröße** | Risikobasiert: fester %-Satz des Kontos pro Trade (Abstand Entry → Stop) |
@@ -153,6 +154,37 @@ Alle Parameter stehen kommentiert in `config/config.example.yaml`.
 
 ---
 
+## Day-Trading-Modus
+
+Optional: `config/config.daytrade.yaml` – alle Positionen werden am selben Tag geschlossen.
+
+```bash
+python -m bot -c config/config.daytrade.yaml backtest --start 2022-01-01   # selbst prüfen
+python -m bot -c config/config.daytrade.yaml run                           # Paper-Modus
+# auf dem VPS als Dienst: cp config/config.daytrade.yaml config/config.yaml (mode/sandbox anpassen)
+```
+
+Regeln: 1h-Kerzen, Ausbruch über das 48-Stunden-Hoch/-Tief mit BTC-Trendfilter, Stop 2 × ATR, Trailing 3 × ATR,
+max. 1 Trade pro Coin und Tag, keine Einstiege nach 21:00 UTC, **um 00:00 UTC wird alles geschlossen**
+(auch nach einem Neustart). Eigene Datenbank/Logdatei, kann also parallel zum Swing-Bot laufen.
+
+> ⚠️ **Ehrliches Testergebnis:** Keine der getesteten Day-Trading-Strategien hatte nach Kosten eine Gewinnkante –
+> weder Volatility-Breakout, Opening-Range-Breakout, Intraday-Momentum, Mean-Reversion noch 1h-/4h-Ausbrüche,
+> weder mit Taker- noch (realistisch gefüllten) Maker-Orders. Intraday sind die Bewegungen zu klein und zu
+> zufällig; die Gewinne der Swing-Strategie stammen gerade aus Trends, die mehrere Tage laufen.
+
+| Backtest (echte Daten, Gebühren, Slippage, Funding) | Rendite | Max. DD | Profit-Faktor |
+|---|---|---|---|
+| Day-Trading, 9 Majors, 2022–09/2026 | **−44,5 %** | 53 % | 0,93 |
+| Day-Trading, 9 Majors, 2024–09/2026 | −21,1 % | 33 % | 0,95 |
+| Swing-Strategie (Standard), 9 Majors, 2022–09/2026 | **+295 %** | 19 % | 1,72 |
+| Swing-Strategie, aber max. 24 h halten (Test-Zeitraum) | ≈ ±0 (+0,04 R/Trade) | – | 1,09 |
+
+Deshalb ist der Modus **für Echtgeld gesperrt** (Paper und Demo funktionieren). Wer ihn trotzdem mit echtem
+Geld nutzen will, muss `strategy.day_trading_allow_real_money: true` setzen – auf eigenes Risiko.
+
+---
+
 ## News & Ereignisse
 
 **Was getestet wurde** (gleiches Verfahren wie bei der Strategie, echte Daten 2021–2026):
@@ -231,7 +263,7 @@ bot/
   notifier.py    Telegram + Logging
 config/          Beispielkonfiguration
 deploy/          systemd-Unit + VPS-Installationsskript
-tests/           pytest-Suite (Indikatoren, Lookahead, Breakout, Risiko, Funding, News, Broker, Live-Order-Ablauf, Engine)
+tests/           pytest-Suite (Indikatoren, Lookahead, Breakout, Day-Trading, Risiko, Funding, News, Broker, Live-Order-Ablauf, Engine)
 ```
 
 Tests: `pip install -r requirements-dev.txt && python -m pytest`

@@ -160,6 +160,26 @@ class Strategy:
             return f"Gegensignal LONG (score {row['long_score']:.2f})"
         return None
 
+    # ---------- Day-Trading-Zeitfenster ----------
+    def session_entry_allowed(self, close_time) -> bool:
+        """Darf eine Kerze, die zu close_time (UTC) schließt, noch einen Einstieg auslösen?"""
+        if not self.cfg.day_trading:
+            return True
+        h = pd.Timestamp(close_time).hour
+        return h <= self.cfg.last_entry_hour_utc and h != self.cfg.flat_hour_utc
+
+    def session_flat_due(self, now, opened_at: str) -> bool:
+        """Muss eine Day-Trading-Position jetzt geschlossen werden?"""
+        if not self.cfg.day_trading:
+            return False
+        now = pd.Timestamp(now)
+        now = now.tz_localize("UTC") if now.tzinfo is None else now.tz_convert("UTC")
+        opened = pd.Timestamp(opened_at)
+        opened = opened.tz_localize("UTC") if opened.tzinfo is None else opened.tz_convert("UTC")
+        if now.normalize() > opened.normalize():
+            return True  # Tageswechsel (auch nach Bot-Neustart)
+        return self.cfg.flat_hour_utc != 0 and now.hour >= self.cfg.flat_hour_utc
+
     def update_stop(self, pos: PositionState, high: float, low: float, atr: float) -> float:
         """Break-Even und ATR-Trailing-Stop (Chandelier). Stops werden nur in Gewinnrichtung verschoben."""
         if pos.side == LONG:

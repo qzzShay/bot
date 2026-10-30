@@ -1,6 +1,7 @@
 """Konfiguration laden (YAML + .env) und validieren."""
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -11,9 +12,16 @@ from dotenv import load_dotenv
 
 from .news import DEFAULT_FEEDS
 
+log = logging.getLogger(__name__)
+
 LIVE_CONFIRMATION = "I_UNDERSTAND_THE_RISK"
 DEFAULT_SYMBOLS = [f"{c}/USDT:USDT" for c in ("BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "LINK")]
 VALID_TIMEFRAMES = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"}
+
+
+def tf_hours(tf: str) -> float:
+    unit = {"m": 1 / 60, "h": 1, "d": 24}[tf[-1]]
+    return int(tf[:-1]) * unit
 
 
 class ConfigError(ValueError):
@@ -65,6 +73,14 @@ class StrategyConfig:
     trailing_start_r: float = 0.0
     trailing_atr_mult: float = 6.0
     exit_on_opposite_signal: bool = False
+    # Day-Trading: alle Positionen am selben UTC-Tag schließen (siehe config/config.daytrade.yaml).
+    # Im Backtest 2021–2026 nach Kosten ohne nachweisbare Gewinnkante – nur für Paper/Demo gedacht.
+    day_trading: bool = False
+    last_entry_hour_utc: int = 21     # keine neuen Einstiege bei Kerzen, die später schließen
+    flat_hour_utc: int = 0            # 0 = um Mitternacht UTC alles schließen, sonst ab dieser Stunde
+    max_trades_per_day: int = 1       # pro Coin
+    # Echtgeld mit Day-Trading ist gesperrt, solange das nicht ausdrücklich auf true steht
+    day_trading_allow_real_money: bool = False
     max_adverse_funding: float = 0.0005
 
 
@@ -160,6 +176,19 @@ class Config:
         need = max(st.ema_trend, st.btc_filter_ema, st.breakout_period) + 50
         if self.timeframes.history_bars < need:
             raise ConfigError(f"timeframes.history_bars muss >= {need} sein")
+        if st.day_trading:
+            if tf_hours(self.timeframes.entry) > 4:
+                raise ConfigError("Day-Trading braucht timeframes.entry von höchstens 4h")
+            if not (0 <= st.flat_hour_utc <= 23 and 0 <= st.last_entry_hour_utc <= 23):
+                raise ConfigError("flat_hour_utc und last_entry_hour_utc müssen zwischen 0 und 23 liegen")
+            if st.flat_hour_utc and st.last_entry_hour_utc >= st.flat_hour_utc:
+                raise ConfigError("last_entry_hour_utc muss vor flat_hour_utc liegen")
+            if self.is_real_money:
+                if not st.day_trading_allow_real_money:
+                    raise ConfigError(
+                        "Day-Trading ist für Echtgeld gesperrt: im Backtest 2022–2026 −44 % (Profit-Faktor 0,93). "
+                        "Nutze Paper/Demo – oder setze strategy.day_trading_allow_real_money: true auf eigenes Risiko.")
+                log.warning("Day-Trading-Modus mit ECHTGELD: im Backtest ohne Gewinnkante!")
         if not 0 < st.short_risk_factor <= 1:
             raise ConfigError("short_risk_factor muss zwischen 0 und 1 liegen")
         r = self.risk

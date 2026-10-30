@@ -147,6 +147,17 @@ class Engine:
         sig = self.strategy.entry_signal(feat)
         if not sig:
             return
+        st = self.cfg.strategy
+        now = pd.Timestamp.now(tz="UTC")
+        if st.day_trading:
+            close_time = feat.index[-1] + tf_delta(self.cfg.timeframes.entry)
+            if not (self.strategy.session_entry_allowed(close_time) and self.strategy.session_entry_allowed(now)):
+                log.info("%s: Signal %s außerhalb des Day-Trading-Fensters", symbol, sig.side)
+                return
+            today = now.normalize().isoformat()
+            if self.store.count_opened_since(self.mode_key, symbol, today) >= st.max_trades_per_day:
+                log.info("%s: Signal %s – Tageslimit von %d Trade(s) erreicht", symbol, sig.side, st.max_trades_per_day)
+                return
         blocked = self.news.blocked(symbol)
         if blocked:
             log.info("%s: Signal %s wegen News ausgesetzt – %s", symbol, sig.side, blocked)
@@ -212,6 +223,11 @@ class Engine:
             c = self.broker.check_exits(sym, price, price)
             if c:
                 self._on_closed(c)
+            pos = self.broker.positions.get(sym)
+            if pos and self.strategy.session_flat_due(now, pos.opened_at):
+                c = self.broker.close(sym, price, "Tagesende")
+                if c:
+                    self._on_closed(c)
 
         # 2) Konto & Kill-Switch
         equity = self.broker.equity()

@@ -90,6 +90,11 @@ class Storage:
         q += " ORDER BY id DESC LIMIT ?"
         return [dict(r) for r in self.conn.execute(q, (*args, limit)).fetchall()]
 
+    def count_opened_since(self, mode: str, symbol: str, since_iso: str) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS n FROM trades WHERE mode=? AND symbol=? AND opened_at>=?",
+                                (mode, symbol, since_iso)).fetchone()
+        return int(row["n"])
+
     # ---------- Equity ----------
     def log_equity(self, ts: str, mode: str, equity: float) -> None:
         self.conn.execute("INSERT INTO equity (ts, mode, equity) VALUES (?, ?, ?)", (ts, mode, equity))

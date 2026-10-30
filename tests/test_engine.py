@@ -1,4 +1,5 @@
 """Engine im Paper-Modus mit einer simulierten Börse (kein Netzwerk)."""
+import pandas as pd
 
 from conftest import make_ohlcv
 
@@ -14,6 +15,8 @@ class FakeExchange:
 
     def __init__(self, data):
         self.data = data
+        idx = next(iter(data.values())).index
+        self.entry_tf = "1h" if idx[1] - idx[0] == pd.Timedelta("1h") else "4h"
         self.i = 450
 
     def load_markets(self):
@@ -27,7 +30,7 @@ class FakeExchange:
 
     def fetch_ohlcv(self, s, tf, bars, **kw):
         df = self.data[s].iloc[: self.i]
-        if tf != "4h":
+        if tf != self.entry_tf:
             df = resample(df, tf).iloc[:-1]   # nur abgeschlossene HTF-Kerzen
         return df.tail(bars)
 
